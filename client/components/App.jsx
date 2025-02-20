@@ -14,12 +14,21 @@ export default function App() {
   const audioElement = useRef(null);
   const [socket, setSocket] = useState(null); // State to hold the socket connection
   const socketRef = useRef(null); // Use useRef to hold the socket instance persistently
-
+  const [messages, setMessages] = useState([]);
+  const [isConnected, setIsConnected] = useState(false);
 
 
   async function startSession() {
     // Get an ephemeral key from the Fastify server
-    const tokenResponse = await fetch("/token");
+    const tokenResponse = await fetch("http://127.0.0.1:5000/openai/token?user_id=123", {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include' // This is important for CORS
+    });
+    console.log(tokenResponse);
     const data = await tokenResponse.json();
     const EPHEMERAL_KEY = data.client_secret.value;
 
@@ -67,6 +76,7 @@ export default function App() {
 
   // Stop current session, clean up peer connection and data channel
   function stopSession() {
+    sendEventToServer('xyz', {type: 'conversation_closed'});
     if (dataChannel) {
       dataChannel.close();
     }
@@ -86,10 +96,16 @@ export default function App() {
     peerConnection.current = null;
   }
 
+
+
+
   // Send a message to the model
   function sendClientEvent(message) {
     if (dataChannel) {
       message.event_id = message.event_id || crypto.randomUUID();
+      console.log('Sending event to openai:');      
+      console.log(message);
+      
       dataChannel.send(JSON.stringify(message));
       setEvents((prev) => [message, ...prev]);
     } else {
@@ -100,7 +116,42 @@ export default function App() {
     }
   }
 
+  async function updateSystemInstruct() {
+    try {
+      const response = await fetch('http://127.0.0.1:5000/system_instruction');
+      const data = await response.json();
+      console.log(data);
+
+      if(data?.system_instruction){
+        const session = {
+            "instructions": data.system_instruction,
+            "input_audio_transcription": {
+                    "model": "whisper-1"
+            }
+        }
+        updateSession(session)
+      }
+      
+      // if (data.instructions) {
+      //   updateSession(data.instructions);
+      //   return true;
+      // }
+      // return false;
+    } catch (error) {
+      console.error('Error updating system instructions:', error);
+      return false;
+    }
+  }
+
+  function updateRealtimeContext() {
+    console.log('Hello');
+    
+  }
+
+
+
   const sendEventToServer = (eventName, eventData) => {
+    
     if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit(eventName, eventData);
       console.log(`Sent event '${eventName}' to server with data:`, eventData);
@@ -130,6 +181,40 @@ export default function App() {
   }
 
 
+  function updateSession(session) {
+    console.log('session update post getting backend event');
+    
+    const event = {
+      type: "session.update",
+      session: session
+    }
+    sendClientEvent(event);
+  }
+
+  function updateContext(context) {
+    console.log(context)
+    console.log('updateing context post getting backend event');
+    
+    const message = 'Context till now basis our previous conversations, use only if requiredx:\n'+context;
+    const event = {
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: message,
+          },
+        ],
+      },
+    };
+
+    sendClientEvent(event);
+
+  }
+
+
   const webSocketBackend = () => {
     try {
       if (socketRef.current && (socketRef.current.connected || socketRef.current.connecting)) {
@@ -137,7 +222,14 @@ export default function App() {
         return; // Exit if already connected or connecting
       }
 
-      const newSocket = io('http://127.0.0.1:5000'); // Create a new socket instance
+      const newSocket = io('http://127.0.0.1:5000', {
+          withCredentials: true,
+          transports: ['websocket'],
+          autoConnect: true,
+          reconnection: true,
+          reconnectionAttempts: 5,
+          reconnectionDelay: 1000
+      }); // Create a new socket instance
 
       socketRef.current = newSocket; // Store the socket instance in the ref
 
@@ -146,6 +238,18 @@ export default function App() {
         console.log('Connected to WebSocket server!');
         setIsConnected(true); // Update connection status
         setMessages(prevMessages => [...prevMessages, 'Connected to server!']);
+      });
+
+      newSocket.on('context_and_instructions', (event_data) => {
+        console.log('Received context/instruction update:', event_data);
+        
+        if(event_data.updated_instructions){
+          updateSession(event_data.updated_instructions);
+        }
+
+        if (event_data.context) {
+          updateContext(event_data.context);
+        }
       });
 
       newSocket.on('message', (data) => {
@@ -164,6 +268,16 @@ export default function App() {
         setMessages(prevMessages => [...prevMessages, 'Disconnected from server.']);
       });
 
+      newSocket.on('connect_error', (error) => {
+        console.error('Socket connection error:', error);
+        setIsConnected(false);
+      });      
+
+
+      newSocket.on('reconnect_attempt', (attemptNumber) => {
+        console.log(`Attempting to reconnect (${attemptNumber})`);
+      });
+
 
     } catch (err) {
       console.error("WebSocket connection error:", err);
@@ -172,23 +286,10 @@ export default function App() {
 
   // Attach event listeners to the data channel when a new one is created
   useEffect(() => {
-    webSocketBackend()
     if (dataChannel) {
       // Append new server events to the list
       dataChannel.addEventListener("message", (e) => {
-        console.log("message:");
-        
-        console.log(e);
-        console.log('\n');
-        if(JSON.parse(e.data).type === "response.output_item.done"){
-          let message = {
-            type: "session.update",
-            session: {
-              instructions: "You are Deadpool(the marvel character)"
-            },
-          }
-          sendClientEvent(message)
-        }
+        sendEventToServer('open_ai_webrtc', JSON.parse(e.data));
         setEvents((prev) => [JSON.parse(e.data), ...prev]);
       });
 
@@ -199,12 +300,16 @@ export default function App() {
       });
     }
 
-    return () => { // Cleanup function
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
-    };
-  }, [dataChannel]);
+    }, [dataChannel]);
+
+    useEffect(() => {
+      webSocketBackend();
+      return () => {
+        if (socketRef.current) {
+          socketRef.current.disconnect();
+        }
+      };
+    }, []);
 
   return (
     <>
@@ -227,6 +332,8 @@ export default function App() {
               sendTextMessage={sendTextMessage}
               events={events}
               isSessionActive={isSessionActive}
+              updateSystemInstruct={updateSystemInstruct}
+              updateContext={updateRealtimeContext}
             />
           </section>
         </section>

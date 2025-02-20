@@ -35,7 +35,6 @@ app.get("/token", async (req, res) => {
         }),
       },
     );
-
     const data = await response.json();
     res.json(data);
   } catch (error) {

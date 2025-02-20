@@ -25,12 +25,27 @@ function SessionStopped({ startSession }) {
   );
 }
 
-function SessionActive({ stopSession, sendTextMessage }) {
+function SessionActive({ stopSession, sendTextMessage, updateSystemInstruct, updateContext }) {
   const [message, setMessage] = useState("");
+  const [isUpdating, setIsUpdating] = useState(false);
 
   function handleSendClientEvent() {
     sendTextMessage(message);
     setMessage("");
+  }
+
+
+  async function handleSystemInstructUpdate() {
+    if (isUpdating) return;
+    
+    setIsUpdating(true);
+    try {
+      await updateSystemInstruct();
+    } catch (error) {
+      console.error('Failed to update system instructions:', error);
+    } finally {
+      setIsUpdating(false);
+    }
   }
 
   return (
@@ -61,6 +76,17 @@ function SessionActive({ stopSession, sendTextMessage }) {
       <Button onClick={stopSession} icon={<CloudOff height={16} />}>
         disconnect
       </Button>
+      <Button onClick={updateContext} icon={<CloudOff height={16} />}>
+        update context
+      </Button>
+      <Button 
+        onClick={handleSystemInstructUpdate} 
+        icon={<CloudOff height={16} />}
+        disabled={isUpdating}
+        className={isUpdating ? "bg-gray-400" : ""}
+      >
+        {isUpdating ? "updating..." : "update instructions"}
+      </Button>
     </div>
   );
 }
@@ -72,6 +98,8 @@ export default function SessionControls({
   sendTextMessage,
   serverEvents,
   isSessionActive,
+  updateSystemInstruct,
+  updateContext
 }) {
   return (
     <div className="flex gap-4 border-t-2 border-gray-200 h-full rounded-md">
@@ -81,6 +109,8 @@ export default function SessionControls({
           sendClientEvent={sendClientEvent}
           sendTextMessage={sendTextMessage}
           serverEvents={serverEvents}
+          updateSystemInstruct={updateSystemInstruct}
+          updateContext={updateContext}
         />
       ) : (
         <SessionStopped startSession={startSession} />
